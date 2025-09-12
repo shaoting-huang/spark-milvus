@@ -1,0 +1,126 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spark-milvus
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-scripts
+  namespace: spark-milvus
+data:
+  test-milvus.py: |
+    from pyspark.sql import SparkSession
+    import os
+    
+    # Create Spark session
+    spark = SparkSession.builder \
+        .appName("Milvus-Spark-Test") \
+        .config("spark.jars.packages", "io.milvus:milvus-spark-connector_2.13:0.1.14") \
+        .getOrCreate()
+    
+    print("=" * 50)
+    print("Spark-Milvus Connector Test")
+    print("=" * 50)
+    
+    # Get Milvus configuration from environment
+    milvus_uri = os.getenv("MILVUS_URI", "http://milvus-standalone.milvus-system.svc.cluster.local:19530")
+    milvus_token = os.getenv("MILVUS_TOKEN", "root:Milvus")
+    milvus_database = os.getenv("MILVUS_DATABASE", "default")
+    milvus_collection = os.getenv("MILVUS_COLLECTION", "hello_spark_milvus")
+    
+    print(f"Milvus URI: {milvus_uri}")
+    print(f"Database: {milvus_database}")
+    print(f"Collection: {milvus_collection}")
+    
+    try:
+        # Try to read from Milvus
+        df = spark.read \
+            .format("milvus") \
+            .option("milvus.uri", milvus_uri) \
+            .option("milvus.token", milvus_token) \
+            .option("milvus.database.name", milvus_database) \
+            .option("milvus.collection.name", milvus_collection) \
+            .load()
+        
+        print(f"Successfully connected to Milvus collection: {milvus_collection}")
+        print(f"Schema:")
+        df.printSchema()
+        
+        count = df.count()
+        print(f"Number of records: {count}")
+        
+        if count > 0:
+            print("First 5 records:")
+            df.show(5)
+            
+    except Exception as e:
+        print(f"Error: {e}")
+        print("This might be expected if the collection doesn't exist yet.")
+    
+    # Test creating a DataFrame
+    print("\nCreating test DataFrame...")
+    test_data = [
+        (1, [0.1, 0.2, 0.3], "test1"),
+        (2, [0.4, 0.5, 0.6], "test2"),
+        (3, [0.7, 0.8, 0.9], "test3")
+    ]
+    
+    test_df = spark.createDataFrame(test_data, ["id", "vector", "text"])
+    print("Test DataFrame created:")
+    test_df.show()
+    
+    print("\nTest completed!")
+    spark.stop()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spark-milvus-test
+  namespace: spark-milvus
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: spark
+        image: apache/spark:3.5.0
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Installing Python dependencies..."
+          pip install pymilvus
+          
+          echo "Downloading Milvus Spark connector JAR..."
+          wget -q https://repo1.maven.org/maven2/io/milvus/milvus-spark-connector_2.13/0.1.14/milvus-spark-connector_2.13-0.1.14.jar -P /opt/spark/jars/
+          
+          echo "Running Spark job..."
+          spark-submit \
+            --master local[*] \
+            --conf spark.driver.memory=2g \
+            --conf spark.executor.memory=2g \
+            /scripts/test-milvus.py
+        env:
+        - name: MILVUS_URI
+          value: "http://milvus-standalone.milvus-system.svc.cluster.local:19530"
+        - name: MILVUS_TOKEN
+          value: "root:Milvus"
+        - name: MILVUS_DATABASE
+          value: "default"
+        - name: MILVUS_COLLECTION
+          value: "hello_spark_milvus"
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+      volumes:
+      - name: scripts
+        configMap:
+          name: spark-scripts

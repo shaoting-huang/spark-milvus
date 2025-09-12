@@ -1,0 +1,45 @@
+# Quick deployment without building JAR
+FROM openjdk:11-jre-slim
+
+# Install Spark
+ENV SPARK_VERSION=3.5.0
+ENV HADOOP_VERSION=3
+ENV SPARK_HOME=/opt/spark
+
+RUN apt-get update && \
+    apt-get install -y curl wget procps && \
+    wget -q https://archive.apache.org/dist/spark/spark-${SPARK_VERSION}/spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz && \
+    tar -xzf spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz && \
+    mv spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION} ${SPARK_HOME} && \
+    rm spark-${SPARK_VERSION}-bin-hadoop${HADOOP_VERSION}.tgz && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set Spark environment
+ENV PATH=${SPARK_HOME}/bin:${SPARK_HOME}/sbin:$PATH
+
+# Create app directory
+WORKDIR /app
+
+# Copy test scripts
+COPY simple-test.scala /app/
+COPY verify-binlog-read.scala /app/
+
+# Create a simple server script
+RUN echo '#!/bin/bash' > /app/start-server.sh && \
+    echo 'echo "Starting Spark-Milvus Connector (Quick Mode)..."' >> /app/start-server.sh && \
+    echo 'echo "================================================"' >> /app/start-server.sh && \
+    echo 'echo "Milvus URI: $MILVUS_URI"' >> /app/start-server.sh && \
+    echo 'echo "This is a quick deployment without the JAR file"' >> /app/start-server.sh && \
+    echo 'echo "================================================"' >> /app/start-server.sh && \
+    echo '' >> /app/start-server.sh && \
+    echo '# Start simple HTTP server for health checks' >> /app/start-server.sh && \
+    echo 'while true; do' >> /app/start-server.sh && \
+    echo '  echo -e "HTTP/1.1 200 OK\n\n{\"status\":\"UP\",\"mode\":\"quick\"}" | nc -l -p 8080 -q 1' >> /app/start-server.sh && \
+    echo 'done' >> /app/start-server.sh && \
+    chmod +x /app/start-server.sh
+
+# Expose ports
+EXPOSE 4040 7077 8080 8081
+
+# Set default command
+CMD ["/app/start-server.sh"]

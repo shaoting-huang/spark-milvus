@@ -11,3 +11,17 @@ project/target
 .DS_Store
 note.md
 build/
+
+# Binary files
+kubectl
+kustomize
+
+# Test and temporary files
+*test*.yaml
+test-*
+simple-test*
+TestApp.java
+
+# Documentation drafts
+*-DRAFT.md
+*_DRAFT.md

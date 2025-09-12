@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spark-milvus
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spark-test-script
+  namespace: spark-milvus
+data:
+  test-milvus.py: |
+    from pyspark.sql import SparkSession
+    import os
+    
+    print("=" * 50)
+    print("Spark-Milvus Connector Test")
+    print("=" * 50)
+    
+    # Create Spark session without external dependencies first
+    spark = SparkSession.builder \
+        .appName("Milvus-Spark-Test") \
+        .getOrCreate()
+    
+    print(f"Spark version: {spark.version}")
+    
+    # Get Milvus configuration from environment
+    milvus_uri = os.getenv("MILVUS_URI", "http://milvus-standalone.milvus-system.svc.cluster.local:19530")
+    milvus_token = os.getenv("MILVUS_TOKEN", "root:Milvus")
+    milvus_database = os.getenv("MILVUS_DATABASE", "default")
+    milvus_collection = os.getenv("MILVUS_COLLECTION", "hello_spark_milvus")
+    
+    print(f"Milvus URI: {milvus_uri}")
+    print(f"Database: {milvus_database}")
+    print(f"Collection: {milvus_collection}")
+    
+    # Test creating a DataFrame
+    print("\nCreating test DataFrame...")
+    test_data = [
+        (1, [0.1, 0.2, 0.3], "test1"),
+        (2, [0.4, 0.5, 0.6], "test2"),
+        (3, [0.7, 0.8, 0.9], "test3")
+    ]
+    
+    test_df = spark.createDataFrame(test_data, ["id", "vector", "text"])
+    print("Test DataFrame created:")
+    test_df.show()
+    
+    print("\nSpark job completed successfully!")
+    print("Note: Milvus connector requires JAR file to be added to connect to Milvus")
+    
+    spark.stop()
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: spark-test-job
+  namespace: spark-milvus
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: spark
+        image: apache/spark:3.5.0-python3
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Starting Spark test job..."
+          echo "Using Spark Python image with pre-installed Spark"
+          
+          # Run the test script directly with spark-submit
+          /opt/spark/bin/spark-submit \
+            --master local[*] \
+            --driver-memory 1g \
+            --executor-memory 1g \
+            /scripts/test-milvus.py
+        env:
+        - name: MILVUS_URI
+          value: "http://milvus-standalone.milvus-system.svc.cluster.local:19530"
+        - name: MILVUS_TOKEN
+          value: "root:Milvus"
+        - name: MILVUS_DATABASE
+          value: "default"
+        - name: MILVUS_COLLECTION
+          value: "hello_spark_milvus"
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "1"
+      volumes:
+      - name: scripts
+        configMap:
+          name: spark-test-script

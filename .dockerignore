@@ -1,0 +1,44 @@
+# Git files
+.git
+.gitignore
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build artifacts
+target/
+project/target/
+project/project/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test files
+src/test/
+
+# Cache files
+.sbt/
+.ivy2/
+.cache/
+
+# Local configuration
+local.conf
+*.local
+
+# Kubernetes manifests (will be in separate directory)
+k8s/
+helm/
