@@ -1,4 +1,4 @@
-package example
+package binlogv2
 
 import io.milvus.storage._
 import org.apache.arrow.c.{ArrowArrayStream, Data}
@@ -9,17 +9,21 @@ import java.util.{HashMap => JHashMap}
 import java.io.File
 import scala.io.Source
 import scala.collection.JavaConverters._
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.{ArrayNode, ObjectNode}
 
 /**
- * Simple Milvus Storage Test Application (No Spark)
+ * Simple Milvus Storage FFI Test (No Spark)
  *
  * This application demonstrates reading Milvus storage data without Spark.
- * It reads test data from src/test/data directory.
+ * It reads test data from src/test/data directory which uses Milvus Storage FFI writer to write data.
  *
  * Usage:
- *   sbt "runMain example.MilvusStorageSparkTest"
+ *   sbt "runMain example.MilvusStorageFFITest"
  */
-object MilvusStorageSparkTest {
+object MilvusStorageFFITest {
 
   def main(args: Array[String]): Unit = {
     println("\n" + "="*80)
@@ -111,7 +115,7 @@ object MilvusStorageSparkTest {
             totalRows += rows
           }
 
-          println(s"\n✓ Successfully read $totalRows rows in $batchCount batch(es)\n")
+          println(s"\nSuccessfully read $totalRows rows in $batchCount batch(es)\n")
         } finally {
           arrowReader.close()
         }
@@ -123,10 +127,6 @@ object MilvusStorageSparkTest {
       reader.destroy()
       readerProperties.free()
       ArrowUtils.releaseArrowSchema(schema)
-
-      println("="*80)
-      println("Test completed successfully!")
-      println("="*80 + "\n")
 
     } catch {
       case e: Exception =>
@@ -217,19 +217,49 @@ object MilvusStorageSparkTest {
   }
 
   /**
-   * Update manifest paths to point to actual test data location
+   * Update manifest paths to point to actual test data location using JSON parser
    */
   private def updateManifestPaths(manifest: String, testDataDir: String): String = {
-    // Simple path replacement - replace the temp paths with actual paths
-    var updated = manifest
-
-    for (i <- 0 to 2) {
-      // Replace any path to column_group_i.parquet with the actual path
-      val pattern = s""""paths":\\s*\\[\\s*"[^"]*column_group_${i}\\.parquet"\\s*\\]"""
-      val replacement = s""""paths": ["${testDataDir}/column_group_${i}.parquet"]"""
-      updated = updated.replaceAll(pattern, replacement)
+    try {
+      // Create Jackson ObjectMapper with Scala module
+      val mapper = new ObjectMapper()
+      mapper.registerModule(DefaultScalaModule)
+      
+      // Parse the JSON manifest
+      val rootNode = mapper.readTree(manifest)
+      
+      // Navigate to column_groups array
+      val columnGroupsNode = rootNode.get("column_groups")
+      if (columnGroupsNode != null && columnGroupsNode.isArray) {
+        val columnGroupsArray = columnGroupsNode.asInstanceOf[ArrayNode]
+        
+        // Update paths for each column group
+        for (i <- 0 until columnGroupsArray.size()) {
+          val columnGroup = columnGroupsArray.get(i).asInstanceOf[ObjectNode]
+          val pathsNode = columnGroup.get("paths")
+          
+          if (pathsNode != null && pathsNode.isArray) {
+            val pathsArray = pathsNode.asInstanceOf[ArrayNode]
+            
+            // Update each path in the paths array
+            for (j <- 0 until pathsArray.size()) {
+              val currentPath = pathsArray.get(j).asText()
+              if (currentPath.contains(s"column_group_${i}.parquet")) {
+                val newPath = s"${testDataDir}/column_group_${i}.parquet"
+                pathsArray.set(j, mapper.valueToTree(newPath).asInstanceOf[JsonNode])
+              }
+            }
+          }
+        }
+      }
+      
+      // Convert back to JSON string
+      mapper.writeValueAsString(rootNode)
+      
+    } catch {
+      case e: Exception =>
+        println(s"Warning: Failed to parse JSON manifest, ${e.getMessage}")
+        manifest
     }
-
-    updated
   }
 }

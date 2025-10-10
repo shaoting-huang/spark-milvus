@@ -34,6 +34,8 @@ import io.milvus.grpc.milvus.{
   DeleteRequest,
   DescribeCollectionRequest,
   DescribeCollectionResponse,
+  DropCollectionRequest,
+  FlushRequest,
   GetImportStateRequest,
   GetImportStateResponse,
   GetPersistentSegmentInfoRequest,
@@ -288,6 +290,51 @@ class MilvusClient(params: MilvusConnectionParams) {
       case e: Exception =>
         Failure(
           new Exception(s"Failed to create collection: ${e.getMessage}")
+        )
+    }
+  }
+
+  def dropCollection(
+      dbName: String = "",
+      collectionName: String
+  ): Try[Status] = {
+    try {
+      val status = stub.dropCollection(
+        DropCollectionRequest(
+          dbName = dbName,
+          collectionName = collectionName
+        )
+      )
+      checkStatus("dropCollection", status)
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(s"Failed to drop collection: ${e.getMessage}")
+        )
+    }
+  }
+
+  def flush(
+      dbName: String = "",
+      collectionNames: Seq[String] = Seq.empty
+  ): Try[Status] = {
+    try {
+      val flushResponse = stub.flush(
+        FlushRequest(
+          dbName = dbName,
+          collectionNames = collectionNames
+        )
+      )
+      checkStatus("flush", flushResponse.status.getOrElse(
+        Status(
+          errorCode = ErrorCode.UnexpectedError,
+          reason = "Flush Status is empty"
+        )
+      ))
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(s"Failed to flush collection: ${e.getMessage}")
         )
     }
   }

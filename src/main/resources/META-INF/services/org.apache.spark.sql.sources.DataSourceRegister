@@ -1,2 +1,3 @@
 com.zilliz.spark.connector.sources.MilvusDataSource
 com.zilliz.spark.connector.binlog.MilvusBinlogDataSource
+com.zilliz.spark.connector.sources.MilvusStorageV2DataSource
