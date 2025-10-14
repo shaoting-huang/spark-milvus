@@ -282,15 +282,20 @@ class MilvusStorageV2Scan(
         )
       )
 
-      val segments = client.getSegments(
+      val allSegments = client.getSegments(
         milvusOption.databaseName,
         milvusOption.collectionName
       ).getOrElse(
         throw new Exception("Failed to get segments")
       )
 
-      if (segments.isEmpty) {
-        logWarning(s"No segments found for collection ${milvusOption.collectionName}")
+      // Filter out Storage V1 segments (storageVersion < 2)
+      // MilvusStorageV2DataSource only handles V2 segments
+      val v2Segments = allSegments.filter(_.storageVersion >= 2)
+      logInfo(s"Total segments: ${allSegments.size}, V2 segments: ${v2Segments.size}, V1 segments filtered out: ${allSegments.size - v2Segments.size}")
+
+      if (v2Segments.isEmpty) {
+        logWarning(s"No V2 segments found for collection ${milvusOption.collectionName}")
         return Array.empty[InputPartition]
       }
 
@@ -304,12 +309,12 @@ class MilvusStorageV2Scan(
         ).getOrElse(
           throw new Exception(s"Partition ${milvusOption.partitionName} not found")
         )
-        segments.filter(_.partitionID == targetPartitionID)
+        v2Segments.filter(_.partitionID == targetPartitionID)
       } else {
-        segments
+        v2Segments
       }
 
-      logInfo(s"Found ${filteredSegments.size} segments to process")
+      logInfo(s"Found ${filteredSegments.size} V2 segments to process")
 
       // Get S3/Minio config from options
       val s3Config = getS3Config(options)

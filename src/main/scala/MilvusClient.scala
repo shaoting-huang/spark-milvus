@@ -607,7 +607,8 @@ class MilvusClient(params: MilvusConnectionParams) {
             partitionID = info.partitionID,
             numRows = info.numRows,
             state = info.state,
-            level = info.level
+            level = info.level,
+            storageVersion = info.storageVersion
           )
         )
       )
@@ -828,7 +829,8 @@ case class MilvusSegmentInfo(
     partitionID: Long,
     numRows: Long,
     state: SegmentState,
-    level: SegmentLevel
+    level: SegmentLevel,
+    storageVersion: Long = 1L
 )
 
 case class MilvusSegmentLogInfo(

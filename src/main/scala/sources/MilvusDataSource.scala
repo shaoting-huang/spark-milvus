@@ -565,13 +565,19 @@ class MilvusScan(
       milvusOption.databaseName,
       milvusOption.collectionName
     )
-    result
+    val allSegments = result
       .getOrElse(
         throw new Exception(
           s"Failed to get segment info: ${result.failed.get.getMessage}"
         )
       )
-      .map(_.segmentID.toString)
+
+    // Filter out Storage V2 segments (storageVersion >= 2)
+    // MilvusDataSource only handles V1 segments
+    val v1Segments = allSegments.filter(_.storageVersion < 2)
+    logInfo(s"Total segments: ${allSegments.size}, V1 segments: ${v1Segments.size}, V2 segments filtered out: ${allSegments.size - v1Segments.size}")
+
+    v1Segments.map(_.segmentID.toString)
   }
 
   def getPartitionInfos(

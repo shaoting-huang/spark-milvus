@@ -15,18 +15,84 @@ object MilvusDataReader {
       "s3a://"
     )
 
-    val insertDF = spark.read
-      .format("milvus")
-      .options(config.options)
-      .option(
-        MilvusOption.S3FileSystemTypeName,
-        fileSystemType
+    // Detect storage versions by querying segment info
+    val client = MilvusClient(
+      MilvusConnectionParams(
+        uri = config.uri,
+        token = config.token,
+        databaseName = config.options.getOrElse(MilvusOption.MilvusDatabaseName, "")
       )
-      .option(MilvusOption.ReaderType, "insert")
-      .option(MilvusOption.MilvusUri, config.uri)
-      .option(MilvusOption.MilvusToken, config.token)
-      .option(MilvusOption.MilvusCollectionName, config.collectionName)
-      .load()
+    )
+
+    val (hasV1, hasV2) = try {
+      val segments = client.getSegments(
+        config.options.getOrElse(MilvusOption.MilvusDatabaseName, ""),
+        config.collectionName
+      ).getOrElse(Seq.empty)
+
+      val v1Count = segments.count(_.storageVersion < 2)
+      val v2Count = segments.count(_.storageVersion >= 2)
+
+      println(s"Collection ${config.collectionName}: Total segments=${segments.size}, V1=${v1Count}, V2=${v2Count}")
+
+      (v1Count > 0, v2Count > 0)
+    } catch {
+      case e: Exception =>
+        println(s"Warning: Failed to detect storage version, defaulting to v1: ${e.getMessage}")
+        (true, false)
+    } finally {
+      client.close()
+    }
+
+    // Read from appropriate format(s) based on segment versions
+    val insertDF = if (hasV1 && hasV2) {
+      // Mixed version collection - read from both formats and union
+      println(s"Mixed version collection detected, reading from both milvus and storagev2 formats")
+
+      val v1DF = spark.read
+        .format("milvus")
+        .options(config.options)
+        .option(MilvusOption.S3FileSystemTypeName, fileSystemType)
+        .option(MilvusOption.ReaderType, "insert")
+        .option(MilvusOption.MilvusUri, config.uri)
+        .option(MilvusOption.MilvusToken, config.token)
+        .option(MilvusOption.MilvusCollectionName, config.collectionName)
+        .load()
+
+      val v2DF = spark.read
+        .format("storagev2")
+        .options(config.options)
+        .option(MilvusOption.S3FileSystemTypeName, fileSystemType)
+        .option(MilvusOption.MilvusUri, config.uri)
+        .option(MilvusOption.MilvusToken, config.token)
+        .option(MilvusOption.MilvusCollectionName, config.collectionName)
+        .load()
+
+      v1DF.union(v2DF)
+    } else if (hasV2) {
+      // Only V2 segments
+      println(s"V2 collection detected, using storagev2 format")
+      spark.read
+        .format("storagev2")
+        .options(config.options)
+        .option(MilvusOption.S3FileSystemTypeName, fileSystemType)
+        .option(MilvusOption.MilvusUri, config.uri)
+        .option(MilvusOption.MilvusToken, config.token)
+        .option(MilvusOption.MilvusCollectionName, config.collectionName)
+        .load()
+    } else {
+      // Only V1 segments or no segments
+      println(s"V1 collection detected, using milvus format")
+      spark.read
+        .format("milvus")
+        .options(config.options)
+        .option(MilvusOption.S3FileSystemTypeName, fileSystemType)
+        .option(MilvusOption.ReaderType, "insert")
+        .option(MilvusOption.MilvusUri, config.uri)
+        .option(MilvusOption.MilvusToken, config.token)
+        .option(MilvusOption.MilvusCollectionName, config.collectionName)
+        .load()
+    }
 
     val deleteDF = spark.read
       .format("milvusbinlog")
@@ -41,34 +107,79 @@ object MilvusDataReader {
       .option(MilvusOption.MilvusCollectionName, config.collectionName)
       .load()
 
-    val insertPkColName = insertDF.schema.fields(2).name
-    val deletePKColName = "data"
-    val timestampColName = "timestamp"
+    // Check if there are any delete records
+    if (deleteDF.isEmpty) {
+      println(s"No delete records found, returning insert data as-is")
+      // Drop system columns if they exist
+      val columnsToDropIfExist = Seq("row_id", "timestamp")
+      val existingColumns = insertDF.schema.fieldNames.toSet
+      val actualColumnsToDrop = columnsToDropIfExist.filter(existingColumns.contains)
+      if (actualColumnsToDrop.nonEmpty) {
+        insertDF.drop(actualColumnsToDrop: _*)
+      } else {
+        insertDF
+      }
+    } else {
+      // Determine primary key column name
+      // For V1 format, row_id and timestamp columns exist at positions 0 and 1
+      // For V2 format, there are no system columns
+      val hasSystemColumns = insertDF.schema.fieldNames.contains("row_id") ||
+                             insertDF.schema.fieldNames.contains("timestamp")
 
-    // only keep the latest delete record for each pk
-    val windowSpecDelete =
-      Window
-        .partitionBy(col(deletePKColName))
-        .orderBy(col(timestampColName).desc)
-    val deleteDFUniqueWindow = deleteDF
-      .withColumn("rn", row_number().over(windowSpecDelete))
-      .filter(col("rn") === 1)
-      .drop("rn")
+      val insertPkColName = if (hasSystemColumns) {
+        // V1 format: primary key is at index 2 (after row_id and timestamp)
+        insertDF.schema.fields(2).name
+      } else {
+        // V2 format: primary key is the first field
+        insertDF.schema.fields(0).name
+      }
 
-    val deleteDFRenamedWindow = deleteDFUniqueWindow
-      .withColumnRenamed(deletePKColName, "delete_pk")
-      .withColumnRenamed(timestampColName, "delete_ts")
+      val deletePKColName = "data"
+      val deleteTsColName = "timestamp"
 
-    val finalInsertDFWindow = insertDF.join(
-      deleteDFRenamedWindow,
-      (col(insertPkColName) === col("delete_pk")) && (col("delete_ts") > col(
-        timestampColName
-      )),
-      "left_anti"
-    )
+      // only keep the latest delete record for each pk
+      val windowSpecDelete =
+        Window
+          .partitionBy(col(deletePKColName))
+          .orderBy(col(deleteTsColName).desc)
+      val deleteDFUniqueWindow = deleteDF
+        .withColumn("rn", row_number().over(windowSpecDelete))
+        .filter(col("rn") === 1)
+        .drop("rn")
 
-    val columnsToDrop = Seq("row_id", "timestamp")
-    finalInsertDFWindow.drop(columnsToDrop: _*)
+      val deleteDFRenamedWindow = deleteDFUniqueWindow
+        .withColumnRenamed(deletePKColName, "delete_pk")
+        .withColumnRenamed(deleteTsColName, "delete_ts")
+
+      // For V2 format, we can't compare timestamps (insert DF doesn't have timestamp)
+      // So we just filter out all records that have been deleted
+      val finalInsertDFWindow = if (hasSystemColumns) {
+        // V1 format: can use timestamp for comparison
+        insertDF.join(
+          deleteDFRenamedWindow,
+          (col(insertPkColName) === col("delete_pk")) &&
+          (col("delete_ts") > col("timestamp")),
+          "left_anti"
+        )
+      } else {
+        // V2 format: just filter by primary key (no timestamp available)
+        insertDF.join(
+          deleteDFRenamedWindow.select("delete_pk"),
+          col(insertPkColName) === col("delete_pk"),
+          "left_anti"
+        )
+      }
+
+      // Drop system columns if they exist
+      val columnsToDropIfExist = Seq("row_id", "timestamp")
+      val existingColumns = finalInsertDFWindow.schema.fieldNames.toSet
+      val actualColumnsToDrop = columnsToDropIfExist.filter(existingColumns.contains)
+      if (actualColumnsToDrop.nonEmpty) {
+        finalInsertDFWindow.drop(actualColumnsToDrop: _*)
+      } else {
+        finalInsertDFWindow
+      }
+    }
   }
 }
 
