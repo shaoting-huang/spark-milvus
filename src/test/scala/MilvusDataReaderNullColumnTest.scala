@@ -60,7 +60,7 @@ class MilvusDataReaderNullColumnTest extends AnyFunSuite with BeforeAndAfterAll 
     }
   }
 
-  test("Read collection with all-null column") {
+  test("Read collection with nullable column") {
     val config = MilvusDataReaderConfig(
       uri = "http://localhost:19530",
       token = "root:Milvus",
@@ -88,8 +88,8 @@ class MilvusDataReaderNullColumnTest extends AnyFunSuite with BeforeAndAfterAll 
     val fieldNames = df.schema.fieldNames.toSet
     assert(fieldNames.contains("id"), "id field should be present")
     assert(fieldNames.contains("int64"), "int64 field should be present")
-    assert(fieldNames.contains("nullable_int"), "nullable_int field should be present")
-    assert(fieldNames.contains("float"), "float field should be present")
+    assert(fieldNames.contains("some_null"), "nullable_int field should be present")
+    assert(fieldNames.contains("all_null"), "float field should be present")
     assert(fieldNames.contains("vector"), "vector field should be present")
 
     // Verify all values in nullable_int column are null
@@ -113,8 +113,8 @@ class MilvusDataReaderNullColumnTest extends AnyFunSuite with BeforeAndAfterAll 
     val fields = List(
       milvusClient.createCollectionField("id", isPrimary = true, dataType = DataType.Int64, autoID = false),
       milvusClient.createCollectionField("int64", dataType = DataType.Int64),
-      milvusClient.createCollectionField("nullable_int", dataType = DataType.Int64, nullable = true),
-      milvusClient.createCollectionField("float", dataType = DataType.Float),
+      milvusClient.createCollectionField("all_null_int", dataType = DataType.Int64, nullable = true),
+      milvusClient.createCollectionField("some_null_float", dataType = DataType.Float, nullable = true),
       milvusClient.createCollectionField("vector", dataType = DataType.FloatVector, typeParams = Map("dim" -> dim.toString))
     )
 
@@ -134,19 +134,22 @@ class MilvusDataReaderNullColumnTest extends AnyFunSuite with BeforeAndAfterAll 
       val idData = (0 until batchSize).map(j => (i * batchSize + j).toLong)
       val int64Data = (0 until batchSize).map(j => j.toLong)
 
-      // Create null data for nullable_int column by passing empty sequence
-      // This will result in all null values in the binlog
-      val nullableIntData = Seq.empty[Long]
+      // For nullable Int64 column - all values are None (null)
+      val nullableIntData = (0 until batchSize).map(_ => None: Option[Long])
 
-      val floatData = (0 until batchSize).map(_ => random.nextFloat())
+      // For nullable Float column - alternate between Some(value) and None (null)
+      val floatData = (0 until batchSize).map(j =>
+        if (j % 2 == 0) Some(random.nextFloat()) else None: Option[Float]
+      )
+
       val vectorData = (0 until batchSize).map(_ =>
         (0 until dim).map(_ => random.nextFloat()).toSeq)
 
       val fieldsData = Seq(
         MilvusFieldData.packInt64FieldData("id", idData),
         MilvusFieldData.packInt64FieldData("int64", int64Data),
-        MilvusFieldData.packInt64FieldData("nullable_int", nullableIntData),
-        MilvusFieldData.packFloatFieldData("float", floatData),
+        MilvusFieldData.packNullableInt64FieldData("all_null_int", nullableIntData),
+        MilvusFieldData.packNullableFloatFieldData("some_null_float", floatData),
         MilvusFieldData.packFloatVectorFieldData("vector", vectorData, dim)
       )
 
@@ -158,10 +161,20 @@ class MilvusDataReaderNullColumnTest extends AnyFunSuite with BeforeAndAfterAll 
     println(s"\nFlushing collection $collectionName...")
     milvusClient.flush("", Seq(collectionName))
 
-    // Wait for segments to be sealed and storage version to be set
-    Thread.sleep(2000)
-
     println(s"\n✓ Test collection prepared with ${batchSize * batchCount} rows")
     println("✓ Column 'nullable_int' has all null values in its binlog files")
+
+    // Verify segments were created
+    println(s"Checking segments for collection $collectionName...")
+    val segmentsTry = milvusClient.getSegments("", collectionName)
+    segmentsTry match {
+      case scala.util.Success(segments) =>
+        println(s"Found ${segments.length} segments")
+        segments.foreach { seg =>
+          println(s"  Segment ${seg.segmentID}: state=${seg.state}, numRows=${seg.numRows}")
+        }
+      case scala.util.Failure(ex) =>
+        println(s"Failed to get segments: ${ex.getMessage}")
+    }
   }
 }
