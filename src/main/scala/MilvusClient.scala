@@ -487,15 +487,12 @@ class MilvusClient(params: MilvusConnectionParams) {
           expr = expr
         )
       )
-      Success(
+      checkStatus("delete", deleteResult.status.getOrElse(
         Status(
-          errorCode = ErrorCode.Success,
-          reason =
-            s"Mock success for deleting from collection: $collectionName with expr: $expr${partitionName
-                .map(p => s" partition: $p")
-                .getOrElse("")}"
+          errorCode = ErrorCode.UnexpectedError,
+          reason = "Delete Status is empty"
         )
-      )
+      ))
     } catch {
       case e: Exception =>
         Failure(
@@ -871,6 +868,10 @@ trait PKProcessor[T] {
 object PKProcessor {
   implicit object IntProcessor extends PKProcessor[Int] {
     def process(seq: Seq[Int]): String = seq.mkString(", ")
+  }
+
+  implicit object LongProcessor extends PKProcessor[Long] {
+    def process(seq: Seq[Long]): String = seq.mkString(", ")
   }
 
   implicit object StringProcessor extends PKProcessor[String] {

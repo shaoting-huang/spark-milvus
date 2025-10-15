@@ -5,6 +5,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.apache.spark.sql.SparkSession
 import scala.util.Random
 import io.milvus.grpc.schema.DataType
+import com.zilliz.spark.connector.PKProcessor._
 
 /**
  * Integration test for MilvusDataReader with Storage V2 segments
@@ -80,11 +81,12 @@ class MilvusDataReaderTest extends AnyFunSuite with BeforeAndAfterAll {
     println("\n=== Data Sample ===")
     df.show(10, truncate = false)
 
-    // Verify row count (should equal inserted data since no deletes)
+    // Verify row count (30 inserted - 6 deleted = 24 remaining)
     val actualCount = df.count()
-    val expectedCount = batchSize * batchCount
+    val deletedCount = 6
+    val expectedCount = batchSize * batchCount - deletedCount
     assert(actualCount == expectedCount,
-      s"Expected $expectedCount rows but got $actualCount")
+      s"Expected $expectedCount rows but got $actualCount (inserted ${batchSize * batchCount}, deleted $deletedCount)")
 
     // Verify schema - should not have row_id and timestamp columns (they are dropped)
     val fieldNames = df.schema.fieldNames.toSet
@@ -132,6 +134,57 @@ class MilvusDataReaderTest extends AnyFunSuite with BeforeAndAfterAll {
     println("\nSuccessfully executed Spark SQL queries")
   }
 
+  test("Verify delete log merging for V2 storage") {
+    val config = MilvusDataReaderConfig(
+      uri = "http://localhost:19530",
+      token = "root:Milvus",
+      collectionName = collectionName,
+      options = Map(
+        MilvusOption.MilvusDatabaseName -> "default",
+        "fs.endpoint" -> "localhost:9000",
+        "fs.bucket_name" -> "a-bucket",
+        "fs.root_path" -> "files",
+        "fs.access_key_id" -> "minioadmin",
+        "fs.access_key_value" -> "minioadmin",
+        "fs.use_ssl" -> "false"
+      )
+    )
+
+    val df = MilvusDataReader.read(spark, config)
+
+    // Deleted IDs: 0, 5, 10, 15, 20, 25
+    val deletedIds = Set(0L, 5L, 10L, 15L, 20L, 25L)
+
+    println("\n=== Verifying Delete Log Merging ===")
+    println(s"Deleted IDs: ${deletedIds.mkString(", ")}")
+
+    // Collect all IDs from the result
+    val resultIds = df.select("id").collect().map(_.getLong(0)).toSet
+
+    println(s"Total rows in result: ${resultIds.size}")
+    println(s"Expected rows: ${batchSize * batchCount - deletedIds.size}")
+
+    // Verify deleted records are not in the result
+    val foundDeletedIds = deletedIds.intersect(resultIds)
+    assert(foundDeletedIds.isEmpty,
+      s"Found deleted IDs in result: ${foundDeletedIds.mkString(", ")}")
+
+    // Verify all non-deleted records are present
+    val allInsertedIds = (0 until batchSize * batchCount).map(_.toLong).toSet
+    val expectedIds = allInsertedIds -- deletedIds
+    val missingIds = expectedIds -- resultIds
+    assert(missingIds.isEmpty,
+      s"Missing non-deleted IDs from result: ${missingIds.mkString(", ")}")
+
+    // Verify exact count
+    assert(resultIds.size == expectedIds.size,
+      s"Expected ${expectedIds.size} rows but got ${resultIds.size}")
+
+    println(s"✓ Delete log merging works correctly")
+    println(s"✓ All ${deletedIds.size} deleted records were filtered out")
+    println(s"✓ All ${expectedIds.size} non-deleted records are present")
+  }
+
   test("Verify automatic V2 format detection") {
     // Create a new client for this test to avoid gRPC timeout issues
     val testClient = MilvusClient(
@@ -167,10 +220,12 @@ class MilvusDataReaderTest extends AnyFunSuite with BeforeAndAfterAll {
       // Read data - should automatically detect and use storagev2 format
       val df = MilvusDataReader.read(spark, config)
 
-      // Verify we can read the data successfully
+      // Verify we can read the data successfully (30 inserted - 6 deleted = 24)
       val count = df.count()
-      assert(count == batchSize * batchCount,
-        s"Should read all ${batchSize * batchCount} rows")
+      val deletedCount = 6
+      val expectedCount = batchSize * batchCount - deletedCount
+      assert(count == expectedCount,
+        s"Should read $expectedCount rows (${batchSize * batchCount} inserted - $deletedCount deleted)")
     } finally {
       testClient.close()
     }
@@ -223,6 +278,17 @@ class MilvusDataReaderTest extends AnyFunSuite with BeforeAndAfterAll {
 
     // Flush to ensure data is persisted
     milvusClient.flush("", Seq(collectionName))
+
+    // Delete some records (delete ids: 0, 5, 10, 15, 20, 25)
+    // This will test the delete log merging functionality
+    val idsToDelete = Seq(0L, 5L, 10L, 15L, 20L, 25L)
+    println(s"\nDeleting ${idsToDelete.size} records with ids: ${idsToDelete.mkString(", ")}")
+    val deleteResult = milvusClient.delete[Long]("", collectionName, pks = idsToDelete)
+    println(s"Delete result: $deleteResult")
+
+    // Flush again to persist delete logs
+    val flushResult = milvusClient.flush("", Seq(collectionName))
+    println(s"Flush after delete result: $flushResult")
 
     // Wait a bit for segments to be sealed and storage version to be set
     Thread.sleep(2000)

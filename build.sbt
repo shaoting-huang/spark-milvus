@@ -54,7 +54,7 @@ lazy val root = (project in file("."))
     assembly / parallelExecution := true,
     Test / parallelExecution := true,
     Compile / compile / parallelExecution := true,
-    version := "0.1.14-SNAPSHOT",
+    version := "0.1.15-SNAPSHOT",
     organization := "com.zilliz",
 
     // Fork JVM for run and tests to properly load native libraries
