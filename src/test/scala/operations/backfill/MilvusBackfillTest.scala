@@ -5,6 +5,7 @@ import org.scalatest.BeforeAndAfterAll
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
 import scala.util.Random
+import scala.util.{Success, Failure}
 
 import com.zilliz.spark.connector.{MilvusClient, MilvusConnectionParams, MilvusFieldData, MilvusOption}
 import com.zilliz.spark.connector.loon.Properties
@@ -25,9 +26,10 @@ class MilvusBackfillTest extends AnyFunSuite with BeforeAndAfterAll {
   var milvusClient: MilvusClient = _
 
   val collectionName = s"backfilltestcollection"
+  val snapshotName = "backfill_snapshot"
   val dim = 128
-  val batchSize = 10000
-  val batchCount = 100
+  val batchSize = 1000
+  val batchCount = 3
 
   override def beforeAll(): Unit = {
     // Initialize Spark
@@ -63,6 +65,21 @@ class MilvusBackfillTest extends AnyFunSuite with BeforeAndAfterAll {
 
   test("Use MilvusBackfill API for backfill operation") {
     
+    // describe the snapshot
+    milvusClient.describeSnapshot(name = snapshotName) match {
+        case Success(response) =>
+          println(s"✓ Snapshot details:")
+          println(s"  Name: ${response.name}")
+          println(s"  Description: ${response.description}")
+          println(s"  Collection: ${response.collectionName}")
+          println(s"  Create Timestamp: ${response.createTs}")
+          println(s"  Partitions: ${response.partitionNames.mkString(", ")}")
+          if (response.s3Location.nonEmpty) {
+            println(s"  S3 Location: ${response.s3Location}")
+          }
+        case Failure(exception) =>
+          println(s"✗ Failed to describe snapshot: ${exception.getMessage}")
+      }
 
     // Prepare new field data as Parquet file
     val totalRecords = batchSize * batchCount
@@ -192,5 +209,18 @@ class MilvusBackfillTest extends AnyFunSuite with BeforeAndAfterAll {
     // Flush to ensure data is persisted
     milvusClient.flush("", Seq(collectionName))
     Thread.sleep(10000)
+
+    // create a snapshot
+    milvusClient.createSnapshot(
+      dbName = "default",
+      collectionName = collectionName,
+      name = snapshotName,
+        description = "Example snapshot created from Scala connector"
+    ) match {
+      case Success(status) =>
+        println(s"✓ Snapshot '$snapshotName' created successfully")
+      case Failure(exception) =>
+        println(s"✗ Failed to create snapshot: ${exception.getMessage}")
+    }
   }
 }

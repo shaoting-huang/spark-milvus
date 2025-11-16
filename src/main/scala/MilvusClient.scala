@@ -31,18 +31,32 @@ import io.milvus.grpc.milvus.{
   ConnectRequest,
   CreateCollectionRequest,
   CreateDatabaseRequest,
+  CreateSnapshotRequest,
   DeleteRequest,
   DescribeCollectionRequest,
   DescribeCollectionResponse,
+  DescribeSnapshotRequest,
+  DescribeSnapshotResponse,
   DropCollectionRequest,
+  DropSnapshotRequest,
   FlushRequest,
   GetImportStateRequest,
   GetImportStateResponse,
   GetPersistentSegmentInfoRequest,
+  GetRestoreSnapshotStateRequest,
+  GetRestoreSnapshotStateResponse,
   ImportRequest,
   InsertRequest,
+  ListRestoreSnapshotJobsRequest,
+  ListRestoreSnapshotJobsResponse,
+  ListSnapshotsRequest,
+  ListSnapshotsResponse,
   MilvusServiceGrpc,
   MutationResult,
+  RestoreSnapshotInfo,
+  RestoreSnapshotRequest,
+  RestoreSnapshotResponse,
+  RestoreSnapshotState,
   ShowPartitionsRequest
 }
 import io.milvus.grpc.schema.{
@@ -766,6 +780,287 @@ class MilvusClient(params: MilvusConnectionParams) {
       case e: Exception =>
         Failure(
           new Exception(s"Failed to get partition infos: ${e.getMessage}")
+        )
+    }
+  }
+
+  /** Create a snapshot for a collection
+    *
+    * @param dbName
+    *   database name
+    * @param collectionName
+    *   collection name
+    * @param name
+    *   snapshot name (user-defined)
+    * @param description
+    *   snapshot description (optional)
+    * @return
+    *   Try[Status]
+    */
+  def createSnapshot(
+      dbName: String = "",
+      collectionName: String,
+      name: String,
+      description: String = ""
+  ): Try[Status] = {
+    try {
+      val status = stub.createSnapshot(
+        CreateSnapshotRequest(
+          dbName = dbName,
+          collectionName = collectionName,
+          name = name,
+          description = description
+        )
+      )
+      checkStatus("createSnapshot", status)
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(s"Failed to create snapshot: ${e.getMessage}")
+        )
+    }
+  }
+
+  /** Drop a snapshot
+    *
+    * @param name
+    *   snapshot name
+    * @return
+    *   Try[Status]
+    */
+  def dropSnapshot(
+      name: String
+  ): Try[Status] = {
+    try {
+      val status = stub.dropSnapshot(
+        DropSnapshotRequest(
+          name = name
+        )
+      )
+      checkStatus("dropSnapshot", status)
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(s"Failed to drop snapshot: ${e.getMessage}")
+        )
+    }
+  }
+
+  /** List all snapshots for a collection or all collections
+    *
+    * @param dbName
+    *   database name
+    * @param collectionName
+    *   collection name (if empty, list all snapshots)
+    * @return
+    *   Try[Seq[String]] - list of snapshot names
+    */
+  def listSnapshots(
+      dbName: String = "",
+      collectionName: String = ""
+  ): Try[Seq[String]] = {
+    try {
+      val response = stub.listSnapshots(
+        ListSnapshotsRequest(
+          dbName = dbName,
+          collectionName = collectionName
+        )
+      )
+      val status = response.status.getOrElse(
+        Status(
+          errorCode = ErrorCode.UnexpectedError,
+          reason = "ListSnapshots Status is empty"
+        )
+      )
+      if (status.errorCode == ErrorCode.Success) {
+        Success(response.snapshots.toSeq)
+      } else {
+        Failure(
+          new Exception(
+            s"List snapshots failed with error code: ${status.errorCode}, reason: ${status.reason}"
+          )
+        )
+      }
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(s"Failed to list snapshots: ${e.getMessage}")
+        )
+    }
+  }
+
+  /** Describe a snapshot
+    *
+    * @param name
+    *   snapshot name
+    * @return
+    *   Try[DescribeSnapshotResponse]
+    */
+  def describeSnapshot(
+      name: String
+  ): Try[DescribeSnapshotResponse] = {
+    try {
+      val response = stub.describeSnapshot(
+        DescribeSnapshotRequest(
+          name = name
+        )
+      )
+      val status = response.status.getOrElse(
+        Status(
+          errorCode = ErrorCode.UnexpectedError,
+          reason = "DescribeSnapshot Status is empty"
+        )
+      )
+      if (status.errorCode == ErrorCode.Success) {
+        Success(response)
+      } else {
+        Failure(
+          new Exception(
+            s"Describe snapshot failed with error code: ${status.errorCode}, reason: ${status.reason}"
+          )
+        )
+      }
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(s"Failed to describe snapshot: ${e.getMessage}")
+        )
+    }
+  }
+
+  /** Restore a snapshot to a new collection
+    *
+    * @param name
+    *   snapshot name
+    * @param dbName
+    *   database name (optional)
+    * @param collectionName
+    *   target collection name for restore
+    * @param rewriteData
+    *   if true, use import to rewrite data to collection (default: false)
+    * @return
+    *   Try[Long] - restore job ID
+    */
+  def restoreSnapshot(
+      name: String,
+      dbName: String = "",
+      collectionName: String,
+      rewriteData: Boolean = false
+  ): Try[Long] = {
+    try {
+      val response = stub.restoreSnapshot(
+        RestoreSnapshotRequest(
+          name = name,
+          dbName = dbName,
+          collectionName = collectionName,
+          rewriteData = rewriteData
+        )
+      )
+      val status = response.status.getOrElse(
+        Status(
+          errorCode = ErrorCode.UnexpectedError,
+          reason = "RestoreSnapshot Status is empty"
+        )
+      )
+      if (status.errorCode == ErrorCode.Success) {
+        Success(response.jobId)
+      } else {
+        Failure(
+          new Exception(
+            s"Restore snapshot failed with error code: ${status.errorCode}, reason: ${status.reason}"
+          )
+        )
+      }
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(s"Failed to restore snapshot: ${e.getMessage}")
+        )
+    }
+  }
+
+  /** Get the state of a restore snapshot job
+    *
+    * @param jobId
+    *   restore job ID
+    * @return
+    *   Try[RestoreSnapshotInfo]
+    */
+  def getRestoreSnapshotState(
+      jobId: Long
+  ): Try[RestoreSnapshotInfo] = {
+    try {
+      val response = stub.getRestoreSnapshotState(
+        GetRestoreSnapshotStateRequest(
+          jobId = jobId
+        )
+      )
+      val status = response.status.getOrElse(
+        Status(
+          errorCode = ErrorCode.UnexpectedError,
+          reason = "GetRestoreSnapshotState Status is empty"
+        )
+      )
+      if (status.errorCode == ErrorCode.Success) {
+        Success(
+          response.info.getOrElse(
+            throw new Exception("RestoreSnapshotInfo is empty")
+          )
+        )
+      } else {
+        Failure(
+          new Exception(
+            s"Get restore snapshot state failed with error code: ${status.errorCode}, reason: ${status.reason}"
+          )
+        )
+      }
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(
+            s"Failed to get restore snapshot state: ${e.getMessage}"
+          )
+        )
+    }
+  }
+
+  /** List all restore snapshot jobs
+    *
+    * @param collectionName
+    *   collection name (optional filter, empty for all)
+    * @return
+    *   Try[Seq[RestoreSnapshotInfo]]
+    */
+  def listRestoreSnapshotJobs(
+      collectionName: String = ""
+  ): Try[Seq[RestoreSnapshotInfo]] = {
+    try {
+      val response = stub.listRestoreSnapshotJobs(
+        ListRestoreSnapshotJobsRequest(
+          collectionName = collectionName
+        )
+      )
+      val status = response.status.getOrElse(
+        Status(
+          errorCode = ErrorCode.UnexpectedError,
+          reason = "ListRestoreSnapshotJobs Status is empty"
+        )
+      )
+      if (status.errorCode == ErrorCode.Success) {
+        Success(response.jobs.toSeq)
+      } else {
+        Failure(
+          new Exception(
+            s"List restore snapshot jobs failed with error code: ${status.errorCode}, reason: ${status.reason}"
+          )
+        )
+      }
+    } catch {
+      case e: Exception =>
+        Failure(
+          new Exception(
+            s"Failed to list restore snapshot jobs: ${e.getMessage}"
+          )
         )
     }
   }
